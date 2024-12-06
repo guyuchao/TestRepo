@@ -59,9 +59,8 @@ def _bilinear_interploate(
         return val # remove boundary
     else:
         return 0
-    
 
-def _roi_unpooling(roi_feat, rois, rois_mask, height, width, spatial_scale, aligned):
+def _roi_unpooling_cpu(roi_feat, rois, rois_mask, height, width, spatial_scale, aligned):
     
     batch_size, num_rois, channels, roi_height, roi_width = roi_feat.shape # 16 10 320 7 7    
     target_feat = torch.zeros((batch_size, num_rois, channels, height, width), device=roi_feat.device, dtype=roi_feat.dtype)
@@ -76,7 +75,6 @@ def _roi_unpooling(roi_feat, rois, rois_mask, height, width, spatial_scale, alig
     roi_feat_ = roi_feat[rois_mask==1]
     rois = rois[rois_mask==1]
     target_feat_ = torch.zeros((roi_feat_.shape[0], channels, height, width), device=roi_feat.device, dtype=roi_feat.dtype)
-    # target_feat_weight_ = torch.zeros((roi_feat_.shape[0], channels, height, width), device=roi_feat.device, dtype=roi_feat.dtype)
 
     offset = 0.5 if aligned else 0.0
     
@@ -97,30 +95,11 @@ def _roi_unpooling(roi_feat, rois, rois_mask, height, width, spatial_scale, alig
                     roi_x = ((w - feat_start_w) / feat_width) * roi_width
                                         
                     target_feat_[batch_idx, :, h, w] = _bilinear_interploate(roi_feat_, roi_y, roi_x, batch_idx)
-        
-        break
-
+    
     target_feat[rois_mask==1] = target_feat_
     target_feat = rearrange(target_feat, "(b n) c h w -> b n c h w", b=batch_size)
     return target_feat
 
-def _roi_unpooling_cuda(roi_feat, rois, rois_mask, height, width, spatial_scale, aligned):
-    batch_size, num_rois, channels, roi_height, roi_width = roi_feat.shape # 16 10 320 7 7    
-
-    roi_feat = rearrange(roi_feat, 'b n c h w -> (b n) c h w') # 20, 3, 64, 64
-    rois = rearrange(rois, "b n c -> (b n) c") # 20, 4
-    rois_mask = rearrange(rois_mask, "b n -> (b n)") # 2, 10
-
-    target_feat = torch.zeros((roi_feat.shape[0], channels, height, width)).cuda()
-
-    roi_feat_ = roi_feat[rois_mask==1]
-    rois_ = rois[rois_mask==1] 
-
-    target_feat_cuda = roiunpool.roi_unpool_forward(roi_feat_, rois_, spatial_scale, height, width, roi_height, roi_width, aligned)
-    target_feat[rois_mask==1] = target_feat_cuda
-
-    target_feat = rearrange(target_feat, '(b n) c h w -> b n c h w', b=batch_size)
-    return target_feat
 
 
 if __name__ == "__main__":

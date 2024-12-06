@@ -8,93 +8,7 @@ from torch.utils.cpp_extension import load
 import torchvision
 from torchvision.transforms.transforms import ToTensor
 
-roiunpool = load(name="roiunpool", sources=["dyna/cuda_extension/roiunpool.cpp", "dyna/cuda_extension/roiunpool.cu"], verbose=True)
-# roiunpool = load(name="roiunpool", sources=["roiunpool.cpp", "roiunpool.cu"], verbose=True)
-
-
-def _bilinear_interploate(
-    roi_feat,
-    y,
-    x,
-    batch_idx
-):
-    def is_legal_coord(y, x, roi_height, roi_width):
-        if y >= 0 and y < roi_height and x >= 0 and x < roi_width:
-            return True
-        else:
-            return False
-  
-    _, channels, roi_height, roi_width = roi_feat.shape # torch.Size([160, 320, 7, 7])
-    # print(height, width) # 64 64
-    
-    y_low = int(math.floor(y))
-    x_low = int(math.floor(x))
-    y_high = int(math.ceil(y))
-    x_high = int(math.ceil(x))
-   
-    ly = y - y_low
-    lx = x - x_low
-    hy = 1.0 - ly
-    hx = 1.0 - lx
-    
-    w1 = hy * hx if is_legal_coord(y_low, x_low, roi_height, roi_width) else 0
-    w2 = hy * lx if is_legal_coord(y_low, x_high, roi_height, roi_width) else 0
-    w3 = ly * hx if is_legal_coord(y_high, x_low, roi_height, roi_width) else 0
-    w4 = ly * lx if is_legal_coord(y_high, x_high, roi_height, roi_width) else 0
-    # print(w1, w2, w3, w4)
-    
-    feat1 = roi_feat[batch_idx, :, y_low, x_low] if w1 != 0 else 0
-    feat2 = roi_feat[batch_idx, :, y_low, x_high] if w2 != 0 else 0
-    feat3 = roi_feat[batch_idx, :, y_high, x_low] if w3 != 0 else 0
-    feat4 = roi_feat[batch_idx, :, y_high, x_high] if w4 != 0 else 0
-    
-    val = w1 * feat1 + w2 * feat2 + w3 * feat3 + w4 * feat4
-    if 1 - (w1+w2+w3+w4) < 1e-5:
-        return val # remove boundary
-    else:
-        return 0
-    
-
-def _roi_unpooling(roi_feat, rois, rois_mask, height, width, spatial_scale, aligned):
-    
-    batch_size, num_rois, channels, roi_height, roi_width = roi_feat.shape # 16 10 320 7 7    
-    target_feat = torch.zeros((batch_size, num_rois, channels, height, width), device=roi_feat.device, dtype=roi_feat.dtype)
-
-    roi_feat = rearrange(roi_feat, "b n c h w -> (b n) c h w")
-    rois = rearrange(rois, "b n c -> (b n) c")
-    rois_mask = rearrange(rois_mask, "b n -> (b n)")
-    target_feat = rearrange(target_feat, "b n c h w -> (b n) c h w")
-    
-    # print(roi_feat.shape, rois_matrix.shape, rois_mask.shape, target_feat.shape) # torch.Size([160, 320, 7, 7]) torch.Size([160, 4]) torch.Size([16, 10]) torch.Size([160, 320, 40, 64])
-
-    roi_feat_ = roi_feat[rois_mask==1]
-    rois = rois[rois_mask==1]
-    target_feat_ = torch.zeros((roi_feat_.shape[0], channels, height, width), device=roi_feat.device, dtype=roi_feat.dtype)
-
-    offset = 0.5 if aligned else 0.0
-    
-    for batch_idx in range(roi_feat_.shape[0]):
-        x1, y1, x2, y2 = rois[batch_idx]
-        
-        feat_start_h, feat_start_w = math.ceil(y1 * spatial_scale - offset), math.ceil(x1 * spatial_scale - offset)
-        feat_end_h, feat_end_w = math.ceil(y2 * spatial_scale - offset), math.ceil(x2 * spatial_scale - offset)
-
-        feat_height = feat_end_h - feat_start_h
-        feat_width = feat_end_w - feat_start_w
-        # print(height, width) 160, 256
-        
-        for h in range(height):
-            for w in range(width):
-                if h >= feat_start_h and h < feat_end_h and w >= feat_start_w and w < feat_end_w:
-                    roi_y = ((h - feat_start_h) / feat_height) * roi_height
-                    roi_x = ((w - feat_start_w) / feat_width) * roi_width
-                                        
-                    target_feat_[batch_idx, :, h, w] = _bilinear_interploate(roi_feat_, roi_y, roi_x, batch_idx)
-    
-    target_feat[rois_mask==1] = target_feat_
-    target_feat = rearrange(target_feat, "(b n) c h w -> b n c h w", b=batch_size)
-    return target_feat
-
+roiunpool = load(name="roiunpool", sources=["roictrl/cuda_extension/roiunpool.cpp", "roictrl/cuda_extension/roiunpool.cu"], verbose=True)
 
 def _roi_unpooling_cuda(roi_feat, rois, rois_mask, height, width, spatial_scale, aligned):
     batch_size, num_rois, channels, roi_height, roi_width = roi_feat.shape
@@ -132,6 +46,7 @@ class Roi_Unpool(torch.autograd.Function):
         grad_input = roiunpool.roi_unpool_backward(grad.contiguous(), rois, ctx.spatial_scale, ctx.height, ctx.width, ctx.pooled_height, ctx.pooled_width, ctx.aligned)
         return grad_input, None, None, None, None, None, None, None
 
+'''
 
 def prepare_input_data():
     image_list = ["../../datasets/test_image_512/zreal_penguin.png", "../../datasets/test_image_512/ship02.png"]
@@ -189,3 +104,4 @@ if __name__ == "__main__":
         print(loss) # tensor(35164.1797, device='cuda:0', grad_fn=<SumBackward0>)
         loss.backward()
         print(feature_map.grad.sum()) # tensor(64503., device='cuda:0')
+'''
