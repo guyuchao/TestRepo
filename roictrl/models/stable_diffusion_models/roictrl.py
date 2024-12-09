@@ -11,9 +11,8 @@ import torch.distributed
 from torch import nn
 from einops import rearrange
 import torchvision
-from dyna.cuda_extension.roiunpool import _roi_unpooling_cuda
+from roictrl.cuda_extension.roiunpool import _roi_unpooling_cuda
 from copy import deepcopy
-from dyna.utils.ptp_util import Control_AttnProcessor
 
 
 def get_fourier_embeds_from_boundingbox(embed_dim, box):
@@ -178,7 +177,6 @@ class FuseWeightGenerator(nn.Module):
     def forward(self, x):
         batch, _, _, _, _ = x.shape
         fg_mask = x.sum(2) != 0
-        # print(x.shape, fg_mask.shape) # torch.Size([8, 16, 320, 56, 96]) torch.Size([8, 16, 1, 56, 96])
         
         x_reshaped = rearrange(x, "b n c h w -> (b n) c h w")
         
@@ -200,22 +198,9 @@ class FuseWeightGenerator(nn.Module):
         fuse_weight = fuse_weight.softmax(dim=1).unsqueeze(2)
         
         x = torch.sum(x * fuse_weight, dim=1)
-
-        # print(fuse_weight.shape) # torch.Size([2, 16, 1, 64, 64])
         
         self.fuse_weight = fuse_weight
         self.fg_mask = fg_mask
-
-        #if fuse_weight.shape[-1] == 96:
-        #    print(self.get_attn_reg())
-        # 0.2659, 0.1636, 0.1648, 0.4288 with attnreg cat case
-        # 0.3379, 0.1616, 0.2122, 0.4218 without attnreg cat case
-        # 0.3353 0.2696 0.2744 0.5308 without attnreg ironman case - 55000
-        # 0.2667 0.3358 0.2581 0.5325 with attnreg ironman case - 55000
-        # 0.3908 0.2526 0.2879 0.5229 without attnreg ironman case - 50000
-        # 0.3179, 0.3605, 0.3051, 0.5264  with attnreg ironman case - 50000
-        #Image.fromarray((fuse_weight[1, 0, 0].detach().cpu().numpy()*255).astype(np.uint8)).save("1.jpg")
-
 
         return x
 
@@ -224,16 +209,6 @@ class ROIFuser(nn.Module):
     def __init__(self, query_dim, cross_attention_dim, num_attention_heads, attention_head_dim, roi_scale, attention_type):
         super().__init__()
         self.roi_scale = roi_scale
-        # self.global_type = attention_type.split('_')[0]
-        # self.rewrite_ratio = int(attention_type.split('_')[1])
-        
-        self.roi_cross_attn = Attention(query_dim=query_dim,
-            cross_attention_dim=cross_attention_dim,
-            heads=num_attention_heads,
-            dim_head=attention_head_dim,
-            dropout=0.2
-        )
-        self.register_parameter("alpha_roi_cross_attn", nn.Parameter(torch.tensor(0.0)))
 
         # learnable roi self-attention
         self.norm1 = nn.LayerNorm(query_dim)
@@ -261,17 +236,7 @@ class ROIFuser(nn.Module):
         self.enabled = True
 
     def learned_fuser(self, roi_attn_output, attn_output):
-        # print(roi_attn_output.shape, attn_output.shape) # torch.Size([8, 15, 320, 56, 96]) torch.Size([8, 1, 320, 56, 96])
         return self.roiattn_fuser(torch.cat([attn_output, roi_attn_output], dim=1))
-
-    def naive_fuser(self, roi_attn_output, attn_output, fg_mask):
-        instance_rewrite_scale = self.rewrite_ratio
-        batch_size, num_roi, HW, C = roi_attn_output.shape
-        roi_attn_output = torch.cat([attn_output.unsqueeze(1), roi_attn_output], dim=1)
-        final_mask = torch.cat([torch.ones((batch_size, 1, HW), device=fg_mask.device), fg_mask * instance_rewrite_scale], dim=1)
-        final_mask = final_mask.view(batch_size, num_roi + 1, HW, 1)
-        final_attn_output = (roi_attn_output * final_mask).sum(dim=1) / (final_mask.sum(dim=1) + 1e-6)
-        return final_attn_output
 
     def roi_cross_attention_pretrained(self, pretrained_attn, roi_hidden_states, instance_embeddings, instance_masks):
         batch_size, num_roi, channel, roi_size_h, roi_size_w = roi_hidden_states.shape        
@@ -283,29 +248,11 @@ class ROIFuser(nn.Module):
         instance_masks = rearrange(instance_masks, "b n -> (b n)").bool()
         
         roi_attn_output = torch.zeros_like(roi_hidden_states)
-
-        if isinstance(pretrained_attn.processor, Control_AttnProcessor):
-            ori_flag = pretrained_attn.processor.get_save_attention_flag()
-            pretrained_attn.processor.set_save_attention_flag(False)
-        
         roi_attn_output[instance_masks] = pretrained_attn(roi_hidden_states[instance_masks], instance_embeddings[instance_masks]).to(dtype=roi_attn_output.dtype)
         
-        if isinstance(pretrained_attn.processor, Control_AttnProcessor):
-            pretrained_attn.processor.set_save_attention_flag(ori_flag)
-        
         roi_attn_output = rearrange(roi_attn_output, "(b n) (h w) c -> b n c h w", b=batch_size, h=roi_size_h)
         return roi_attn_output
 
-    def roi_cross_attention_learned(self, roi_hidden_states, instance_embeddings, instance_masks):
-        batch_size, num_roi, channel, roi_size_h, roi_size_w = roi_hidden_states.shape        
-        roi_hidden_states = rearrange(roi_hidden_states, "b n c h w -> (b n) (h w) c")
-        instance_embeddings = rearrange(instance_embeddings, "b n l c -> (b n) l c")
-        instance_masks = rearrange(instance_masks, "b n -> (b n)").bool()
-        roi_attn_output = torch.zeros_like(roi_hidden_states)
-        roi_attn_output[instance_masks] = self.roi_cross_attn(roi_hidden_states[instance_masks], instance_embeddings[instance_masks]).to(dtype=roi_attn_output.dtype)     
-        roi_attn_output = rearrange(roi_attn_output, "(b n) (h w) c -> b n c h w", b=batch_size, h=roi_size_h)
-        return roi_attn_output
-        
     def coord_self_attention_learned(self, global_attn_output, position_feat):
         position_feat = self.context_proj(position_feat)
         n_visual = global_attn_output.shape[1]
@@ -325,17 +272,11 @@ class ROIFuser(nn.Module):
         
         return roi_attn_output
 
-    def forward(self, normed_hidden_states, hidden_states, attn_output, pretrained_attn, instance_boxes, instance_masks, instance_embeddings, instance_pooled_embeddings, spatial_size, position_feat, global_bg_mask):
-        '''
-        hidden_states: torch.Size([16, 2560, 320]) 40 * 64 = 2560
-        boxes: torch.Size([16, 30, 4])
-        masks: torch.Size([16, 30])
-        instance_prompt: torch.Size([16, 30, 1024]) # text embedding of each instance
-        '''
+    def forward(self, normed_hidden_states, hidden_states, attn_output, pretrained_attn, instance_boxes, instance_masks, instance_embeddings, spatial_size, position_feat):
         if not self.enabled:
             return attn_output + hidden_states
 
-        downsample_rate = int(math.sqrt((int(spatial_size[0]) * int(spatial_size[1])) / (normed_hidden_states.shape[1]))) # 8
+        downsample_rate = int(math.sqrt((int(spatial_size[0]) * int(spatial_size[1])) / (normed_hidden_states.shape[1])))
         spatial_scale = 1 / downsample_rate
         original_size = [spatial_size[0], spatial_size[1]] # [320, 512]
         
@@ -345,10 +286,7 @@ class ROIFuser(nn.Module):
         # step 2-1: pretrained cross-attn on ROI
         roi_attn_output = self.roi_cross_attention_pretrained(pretrained_attn, normed_roi_hidden_states, instance_embeddings, instance_masks)
         
-        # step 2-2: learned cross-attn on ROI
-        roi_attn_output = roi_attn_output# + self.alpha_roi_cross_attn.tanh() * self.roi_cross_attention_learned(normed_roi_hidden_states, instance_embeddings, instance_masks)
-
-        # step 2-4: roi self-attention
+        # step 2-2: roi self-attention
         roi_attn_output = roi_attn_output + self.alpha_roi_self_attn.tanh() * self.roi_self_attention_learned(roi_attn_output, instance_masks)
         
         # step 3-1: map to original size

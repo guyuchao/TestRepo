@@ -394,10 +394,8 @@ class BasicTransformerBlock(nn.Module):
                     roictrl_kwargs["instance_boxes"], 
                     roictrl_kwargs["instance_masks"], 
                     roictrl_kwargs["instance_embeddings"],
-                    roictrl_kwargs.get("instance_pooled_embeddings"),
                     roictrl_kwargs["spatial_size"],
                     roictrl_kwargs["objs"],
-                    roictrl_kwargs.get("global_bg_mask")
                 )
             else:
                 hidden_states = attn_output + hidden_states

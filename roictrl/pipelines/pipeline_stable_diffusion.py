@@ -37,7 +37,7 @@ from diffusers.utils.torch_utils import randn_tensor
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline, StableDiffusionMixin
 from diffusers.pipelines.stable_diffusion.pipeline_output import StableDiffusionPipelineOutput
 from diffusers.pipelines.stable_diffusion.safety_checker import StableDiffusionSafetyChecker
-from dyna.utils.registry import PIPELINE_REGISTRY
+from roictrl.utils.registry import PIPELINE_REGISTRY
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
