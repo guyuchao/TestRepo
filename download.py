@@ -1,5 +1,9 @@
-from huggingface_hub import snapshot_download, hf_hub_download
-snapshot_download(
-   repo_id="TencentARC/t2iadapter_sketch_sd14v1",
-   local_dir="experiments/pretrained_models/t2iadapter_sketch_sd14v1",
+from huggingface_hub import HfApi
+api = HfApi()
+
+
+api.upload_folder(
+   folder_path="experiments/pretrained_models/paper_pretrained_models/Mix_of_Show_Fused_Models/potter+hermione+thanos+dogA+dogB+catA_chilloutmix/combined_model_base",
+   repo_id="guyuchao/MixofShow_Fused_ChilloutMix_SixConcepts",
+   repo_type="model",
    token="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")
