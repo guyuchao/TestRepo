@@ -8,6 +8,7 @@ from copy import deepcopy
 from safetensors.torch import load_file
 import json
 from einops import rearrange
+import os
 
 
 @torch.no_grad()
@@ -149,7 +150,7 @@ def prepare_human_inference(use_baseline=False):
         ],
         "roi_phrases": [
             "a <potter1> <potter2>",
-            "a <hermione1> <hermione2>",
+            "a <hermione1> <hermione2> wearing uniform",
             "a <thanos1> <thanos2> wearing purple armors"
         ],
         "height": 512,
@@ -206,8 +207,8 @@ if __name__ == "__main__":
         pretrained_model_path="experiments/pretrained_models/paper_pretrained_models/Mix_of_Show_Fused_Models/potter+hermione+thanos+dogA+dogB+catA_chilloutmix/combined_model_base",
         roictrl_path="experiments/pretrained_models/ROICtrl/ROICtrl_sdv14_30K.safetensors"
     )
-    dsa
-    input_data = prepare_human_inference(use_baseline=True)
+    
+    input_data = prepare_human_inference(use_baseline=False)
     cross_attention_kwargs = {
         'roictrl': encode_roi_input(input_data, pipe, negative_prompt="worst quality, low quality, blurry, low resolution, low quality")
     }
@@ -222,7 +223,9 @@ if __name__ == "__main__":
         roictrl_scheduled_sampling_beta=input_data['roictrl_scheduled_sampling_beta']
     ).images[0]
 
-    result.save('results/paper_results/application/edlora/edlora_human_baseline.png')
+    save_path = "results/paper_results/application/edlora/edlora_human_baseline.png"
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    result.save(save_path)
 
     result_box = draw_box(result, input_data['roi_boxes'], input_data['roi_phrases'], height=input_data['height'], width=input_data['width'])
-    result_box.save("results/paper_results/application/edlora/edlora_human_baseline_box.png")
+    result_box.save(save_path.replace(".png", "_box.png"))
